@@ -1,27 +1,40 @@
 "use client";
 
-import { useCoAgent, useCopilotAction, useCopilotAdditionalInstructions } from "@copilotkit/react-core";
+import { useCoAgent, useCopilotAction, useCopilotAdditionalInstructions, useCopilotMessagesContext } from "@copilotkit/react-core";
 import { CopilotKitCSSProperties, CopilotChat, CopilotPopup } from "@copilotkit/react-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type React from "react";
+import MarkdownIt, { } from "markdown-it";
 import { Button } from "@/components/ui/button"
 import AppChatHeader, { PopupHeader } from "@/components/canvas/AppChatHeader";
-import { X } from "lucide-react"
+import { X, MoreHorizontal, Plus, Menu } from "lucide-react"
 import CardRenderer from "@/components/canvas/CardRenderer";
 import ShikiHighlighter from "react-shiki/web";
 import { motion, useScroll, useTransform, useMotionValueEvent } from "motion/react";
 import { EmptyState } from "@/components/empty-state";
 import { cn, getContentArg } from "@/lib/utils";
+import { diffWords } from "diff";
 import type { AgentState, Item, ItemData, ProjectData, EntityData, NoteData, ChartData, CardType } from "@/lib/canvas/types";
-import { initialState, isNonEmptyAgentState } from "@/lib/canvas/state";
+import { initialState, isNonEmptyAgentState, defaultDataFor } from "@/lib/canvas/state";
 import { projectAddField4Item, projectSetField4ItemText, projectSetField4ItemDone, projectRemoveField4Item, chartAddField1Metric, chartSetField1Label, chartSetField1Value, chartRemoveField1Metric } from "@/lib/canvas/updates";
 import useMediaQuery from "@/hooks/use-media-query";
 import ItemHeader from "@/components/canvas/ItemHeader";
 import NewItemMenu from "@/components/canvas/NewItemMenu";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import MarkdownEditor from "@/components/MarkdownEditor";
+import { TextMessage, ActionExecutionMessage, ResultMessage, AgentStateMessage, Role, Message } from "@copilotkit/runtime-client-gql"
+import { AngleSelector } from "@/components/canvas/AngleSelector";
+import { ConfirmChanges } from "@/components/canvas/ConfirmChanges";
 
 export default function CopilotKitPage() {
   const { state, setState } = useCoAgent<AgentState>({
-    name: "sample_agent",
+    name: "story_agent",
     initialState,
   });
 
@@ -47,6 +60,153 @@ export default function CopilotKitPage() {
   const lastCreationRef = useRef<{ type: CardType; name: string; id: string; ts: number } | null>(null);
   const lastChecklistCreationRef = useRef<Record<string, { text: string; id: string; ts: number }>>({});
   const lastMetricCreationRef = useRef<Record<string, { label: string; value: number | ""; id: string; ts: number }>>({});
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
+  const { messages, setMessages } = useCopilotMessagesContext();
+  const [currentDocument, setCurrentDocument] = useState("");
+
+  // Conversations state
+  type Conversation = { id: string; title: string; createdAt: number; messages: any; state: any };
+  const LS_CONVS = "canvas_conversations_v1";
+  const LS_SELECTED = "canvas_selected_conversation_v1";
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<string>("");
+
+  // Initialize conversations from localStorage
+  useEffect(() => {
+    try {
+      debugger
+      const raw = typeof window !== "undefined" ? window.localStorage.getItem(LS_CONVS) : null;
+      const saved: Conversation[] = raw ? JSON.parse(raw) : [];
+      const valid = Array.isArray(saved) ? saved.filter((c) => c && typeof c.id === "string") : [];
+      let sel = typeof window !== "undefined" ? window.localStorage.getItem(LS_SELECTED) ?? "" : "";
+      if (!valid.length) {
+        const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        const first: Conversation = { id, title: "Chat 1", createdAt: Date.now(), messages: [], state: {} };
+        setConversations([first]);
+        setSelectedConversationId(id);
+        return;
+      }
+      let mapped = valid.map((c) => {
+        let finalMessages = [];
+        for (const message of c?.messages) {
+          if (message?.type === "TextMessage") {
+            finalMessages.push(new TextMessage({
+              role: message?.role === "user" ? Role.User : Role.Assistant,
+              content: message?.content
+            }));
+          }
+          else if (message?.type === "ActionExecutionMessage") {
+            finalMessages.push(new ActionExecutionMessage({
+              name: message?.name,
+              arguments: message?.arguments
+            }));
+          }
+          else if (message?.type === "ResultMessage") {
+            finalMessages.push(new ResultMessage({
+              actionExecutionId: message?.actionExecutionId,
+              actionName: message?.actionName,
+              result: message?.result
+            }));
+          }
+          else if (message?.type === "AgentStateMessage") {
+            finalMessages.push(new AgentStateMessage({
+              agentName: message?.agentName,
+              state: message?.state
+            }));
+          }
+        }
+        return {
+          ...c,
+          messages: finalMessages
+        }
+      });
+      setConversations(mapped);
+      setMessages(mapped[0].messages);
+      if (!sel || !mapped.some((c) => c.id === sel)) {
+        sel = mapped[0].id;
+      }
+      setSelectedConversationId(sel);
+    } catch {
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      setConversations([{ id, title: "Chat 1", createdAt: Date.now(), messages: [], state: {} }]);
+      setSelectedConversationId(id);
+    }
+  }, []);
+
+  // Persist conversations and selection
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleBeforeUnload = () => {
+      window.localStorage.setItem(LS_CONVS, JSON.stringify(conversations));
+      // window.localStorage.setItem("wishlist", JSON.stringify(state?.favorites));
+    };
+
+    // Runs when user closes tab or refreshes
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    // Cleanup
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [conversations]);
+
+
+  useEffect(() => {
+    debugger
+    let index = conversations.findIndex((conversation: Conversation) => conversation.id === selectedConversationId)
+    if (index != -1) {
+      let modifiedConversation = conversations
+      modifiedConversation[index].messages = messages
+      modifiedConversation[index].state = state
+      setConversations(modifiedConversation)
+    }
+
+  }, [messages, selectedConversationId])
+
+
+  const createConversation = useCallback((title?: string) => {
+    setConversations((prev) => {
+      const count = prev.length + 1;
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const conv: Conversation = { id, title: (title ?? `Chat ${count}`) || `Chat ${count}`, createdAt: Date.now(), messages: [], state: {} };
+      const next = [conv, ...prev];
+      setSelectedConversationId(id);
+      return next;
+    });
+  }, []);
+
+  const renameConversation = useCallback((id: string) => {
+    const current = conversations.find((c) => c.id === id);
+    const nextTitle = typeof window !== "undefined" ? window.prompt("Rename conversation", current?.title ?? "") : null;
+    if (nextTitle == null) return;
+    const title = nextTitle.trim();
+    if (!title) return;
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)));
+  }, [conversations]);
+
+  const deleteConversation = useCallback((id: string) => {
+    setConversations((prev) => {
+      const next = prev.filter((c) => c.id !== id);
+      if (!next.length) {
+        const nid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        const first: Conversation = { id: nid, title: "Chat 1", createdAt: Date.now(), messages: [], state: {} };
+        setSelectedConversationId(nid);
+        return [first];
+      }
+      if (selectedConversationId === id) setSelectedConversationId(next[0].id);
+      return next;
+    });
+  }, [selectedConversationId]);
+
+  const clearAllConversations = useCallback(() => {
+    const ok = typeof window !== "undefined" ? window.confirm("Clear all conversations?") : true;
+    if (!ok) return;
+    const nid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const first: Conversation = { id: nid, title: "Chat 1", createdAt: Date.now(), messages: [], state: {} };
+    setConversations([first]);
+    setSelectedConversationId(nid);
+  }, []);
 
   useMotionValueEvent(scrollY, "change", (y) => {
     const disable = y >= headerScrollThreshold;
@@ -68,6 +228,55 @@ export default function CopilotKitPage() {
       setShowJsonView(false);
     }
   }, [viewState?.items, showJsonView]);
+
+  function fromMarkdown(text: string) {
+    const md = new MarkdownIt({
+      typographer: true,
+      html: true,
+    });
+
+    return md.render(text);
+  }
+  useCopilotAction({
+    name: "selectAngle",
+    description: "Select an angle for the story",
+    parameters: [{
+      name: "angles",
+      type: "string[]",
+      description: "A list of angles from which user can select"
+    }],
+    renderAndWaitForResponse: ({ args, respond }) => <AngleSelector args={args} respond={respond} />
+  })
+
+  useCopilotAction({
+    name: "generateStoryAndConfirm",
+    description: "Generate a story and confirm it",
+    parameters: [
+      {
+        name: "story",
+        type: "string",
+        description: "The story that is generated. Strictly markdown format."
+      },
+      {
+        name: "title",
+        type: "string",
+        description: "The title of the story"
+      },
+      {
+        name: "description",
+        type: "string",
+        description: "The description of the story"
+      }
+    ],
+    renderAndWaitForResponse: ({ args, respond }) => <ConfirmChanges args={args} respond={respond} status={undefined}
+      onReject={function (): void {
+        throw new Error("Function not implemented.");
+      }} onConfirm={function (): void {
+        throw new Error("Function not implemented.");
+      }} editor={undefined} currentDocument={""} setCurrentDocument={function (document: string): void {
+        throw new Error("Function not implemented.");
+      }} />
+  })
 
 
 
@@ -127,6 +336,7 @@ export default function CopilotKitPage() {
         "If a command does not specify which item to change, ask the user to clarify before proceeding.",
         `Global Title: ${gTitle || "(none)"}`,
         `Global Description: ${gDesc || "(none)"}`,
+        `Conversation ID: ${selectedConversationId || "(none)"}`,
         "Items (sample):",
         summary || "(none)",
         fieldSchema,
@@ -135,97 +345,8 @@ export default function CopilotKitPage() {
     })(),
   });
 
-  // Tool-based HITL: choose item
-  useCopilotAction({
-    name: "choose_item",
-    description: "Ask the user to choose an item id from the canvas.",
-    available: "remote",
-    parameters: [
-      { name: "content", type: "string", required: false, description: "Prompt to display." },
-    ],
-    renderAndWaitForResponse: ({ respond, args }) => {
-      const items = viewState.items ?? initialState.items;
-      if (!items.length) {
-        return (
-          <div className="rounded-md border bg-white p-4 text-sm shadow">
-            <p>No items available.</p>
-          </div>
-        );
-      }
-      let selectedId = items[0].id;
-      return (
-        <div className="rounded-md border bg-white p-4 text-sm shadow">
-          <p className="mb-2 font-medium">Select an item</p>
-          <p className="mb-3 text-xs text-gray-600">{getContentArg(args) ?? "Which item should I use?"}</p>
-          <select
-            className="w-full rounded border px-2 py-1"
-            defaultValue={selectedId}
-            onChange={(e) => {
-              selectedId = e.target.value;
-            }}
-          >
-            {(items).map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({p.id})
-              </option>
-            ))}
-          </select>
-          <div className="mt-3 flex justify-end gap-2">
-            <button className="rounded border px-3 py-1" onClick={() => respond?.("")}>Cancel</button>
-            <button className="rounded border bg-blue-600 px-3 py-1 text-white" onClick={() => respond?.(selectedId)}>Use item</button>
-          </div>
-        </div>
-      );
-    },
-  });
 
-  // Tool-based HITL: choose card type
-  useCopilotAction({
-    name: "choose_card_type",
-    description: "Ask the user to choose a card type to create.",
-    available: "remote",
-    parameters: [
-      { name: "content", type: "string", required: false, description: "Prompt to display." },
-    ],
-    renderAndWaitForResponse: ({ respond, args }) => {
-      const options: { id: CardType; label: string }[] = [
-        { id: "project", label: "Project" },
-        { id: "entity", label: "Entity" },
-        { id: "note", label: "Note" },
-        { id: "chart", label: "Chart" },
-      ];
-      let selected: CardType | "" = "";
-      return (
-        <div className="rounded-md border bg-white p-4 text-sm shadow">
-          <p className="mb-2 font-medium">Select a card type</p>
-          <p className="mb-3 text-xs text-gray-600">{getContentArg(args) ?? "Which type of card should I create?"}</p>
-          <select
-            className="w-full rounded border px-2 py-1"
-            defaultValue=""
-            onChange={(e) => {
-              selected = e.target.value as CardType;
-            }}
-          >
-            <option value="" disabled>Select an item type…</option>
-            {options.map((opt) => (
-              <option key={opt.id} value={opt.id}>{opt.label}</option>
-            ))}
-          </select>
-          <div className="mt-3 flex justify-end gap-2">
-            <button className="rounded border px-3 py-1" onClick={() => respond?.("")}>Cancel</button>
-            <button
-              className="rounded border bg-blue-600 px-3 py-1 text-white"
-              onClick={() => selected && respond?.(selected)}
-              disabled={!selected}
-            >
-              Use type
-            </button>
-          </div>
-        </div>
-      );
-    },
-  });
-
+  // Canvas helpers restored
   const updateItem = useCallback(
     (itemId: string, updates: Partial<Item>) => {
       setState((prev) => {
@@ -259,8 +380,6 @@ export default function CopilotKitPage() {
     });
   }, [setState]);
 
-  // Checklist item local helper removed; Copilot actions handle checklist CRUD
-
   const toggleTag = useCallback((itemId: string, tag: string) => {
     updateItemData(itemId, (prev) => {
       const anyPrev = prev as { field3?: string[] };
@@ -273,42 +392,12 @@ export default function CopilotKitPage() {
     });
   }, [updateItemData]);
 
-  // Remove checklist item local helper removed; use Copilot action instead
-
-  // Helper to generate default data by type
-  const defaultDataFor = useCallback((type: CardType): ItemData => {
-    switch (type) {
-      case "project":
-        return {
-          field1: "",
-          field2: "",
-          field3: "",
-          field4: [],
-          field4_id: 0,
-        } as ProjectData;
-      case "entity":
-        return {
-          field1: "",
-          field2: "",
-          field3: [],
-          field3_options: ["Tag 1", "Tag 2", "Tag 3"],
-        } as EntityData;
-      case "note":
-        return { field1: "" } as NoteData;
-      case "chart":
-        return { field1: [], field1_id: 0 } as ChartData;
-      default:
-        return { content: "" } as NoteData;
-    }
-  }, []);
-
   const addItem = useCallback((type: CardType, name?: string) => {
     const t: CardType = type;
     let createdId = "";
     setState((prev) => {
       const base = prev ?? initialState;
       const items: Item[] = base.items ?? [];
-      // Derive next numeric id robustly from both itemsCreated counter and max existing id
       const maxExisting = items.reduce((max, it) => {
         const parsed = Number.parseInt(String(it.id ?? "0"), 10);
         return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
@@ -327,532 +416,40 @@ export default function CopilotKitPage() {
       return { ...base, items: nextItems, itemsCreated: nextNumber, lastAction: `created:${createdId}` } as AgentState;
     });
     return createdId;
-  }, [defaultDataFor, setState]);
+  }, [setState]);
 
 
+  function diffPartialText(
+    oldText: string,
+    newText: string,
+    isComplete: boolean = false
+  ) {
+    let oldTextToCompare = oldText;
+    if (oldText.length > newText.length && !isComplete) {
+      // make oldText shorter
+      oldTextToCompare = oldText.slice(0, newText.length);
+    }
 
-  // Frontend Actions (exposed as tools to the agent via CopilotKit)
-  useCopilotAction({
-    name: "setGlobalTitle",
-    description: "Set the global title/name (outside of items).",
-    available: "remote",
-    parameters: [
-      { name: "title", type: "string", required: true, description: "The new global title/name." },
-    ],
-    handler: ({ title }: { title: string }) => {
-      setState((prev) => ({ ...(prev ?? initialState), globalTitle: title }));
-    },
-  });
+    const changes = diffWords(oldTextToCompare, newText);
 
-  useCopilotAction({
-    name: "setGlobalDescription",
-    description: "Set the global description/subtitle (outside of items).",
-    available: "remote",
-    parameters: [
-      { name: "description", type: "string", required: true, description: "The new global description/subtitle." },
-    ],
-    handler: ({ description }: { description: string }) => {
-      setState((prev) => ({ ...(prev ?? initialState), globalDescription: description }));
-    },
-  });
-
-  // Frontend Actions (item-scoped)
-  useCopilotAction({
-    name: "setItemName",
-    description: "Set an item's name/title.",
-    available: "remote",
-    parameters: [
-      { name: "name", type: "string", required: true, description: "The new item name/title." },
-      { name: "itemId", type: "string", required: true, description: "Target item id." },
-    ],
-    handler: ({ name, itemId }: { name: string; itemId: string }) => {
-      updateItem(itemId, { name });
-    },
-  });
-
-  // Set item subtitle
-  useCopilotAction({
-    name: "setItemSubtitleOrDescription",
-    description: "Set an item's description/subtitle (short description or subtitle).",
-    available: "remote",
-    parameters: [
-      { name: "subtitle", type: "string", required: true, description: "The new item description/subtitle." },
-      { name: "itemId", type: "string", required: true, description: "Target item id." },
-    ],
-    handler: ({ subtitle, itemId }: { subtitle: string; itemId: string }) => {
-      updateItem(itemId, { subtitle });
-    },
-  });
-
-
-  // Note-specific field updates (field numbering)
-  useCopilotAction({
-    name: "setNoteField1",
-    description: "Update note content (note.data.field1).",
-    available: "remote",
-    parameters: [
-      { name: "value", type: "string", required: true, description: "New content for note.data.field1." },
-      { name: "itemId", type: "string", required: true, description: "Target item id (note)." },
-    ],
-    handler: ({ value, itemId }: { value: string; itemId: string }) => {
-      updateItemData(itemId, (prev) => {
-        const nd = prev as NoteData;
-        if (Object.prototype.hasOwnProperty.call(nd, "field1")) {
-          return { ...(nd as NoteData), field1: value } as NoteData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  useCopilotAction({
-    name: "appendNoteField1",
-    description: "Append text to note content (note.data.field1).",
-    available: "remote",
-    parameters: [
-      { name: "value", type: "string", required: true, description: "Text to append to note.data.field1." },
-      { name: "itemId", type: "string", required: true, description: "Target item id (note)." },
-      { name: "withNewline", type: "boolean", required: false, description: "If true, prefix with a newline." },
-    ],
-    handler: ({ value, itemId, withNewline }: { value: string; itemId: string; withNewline?: boolean }) => {
-      updateItemData(itemId, (prev) => {
-        const nd = prev as NoteData;
-        if (Object.prototype.hasOwnProperty.call(nd, "field1")) {
-          const existing = (nd.field1 ?? "");
-          const next = existing + (withNewline ? "\n" : "") + value;
-          return { ...(nd as NoteData), field1: next } as NoteData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  useCopilotAction({
-    name: "clearNoteField1",
-    description: "Clear note content (note.data.field1).",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (note)." },
-    ],
-    handler: ({ itemId }: { itemId: string }) => {
-      updateItemData(itemId, (prev) => {
-        const nd = prev as NoteData;
-        if (Object.prototype.hasOwnProperty.call(nd, "field1")) {
-          return { ...(nd as NoteData), field1: "" } as NoteData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  useCopilotAction({
-    name: "setProjectField1",
-    description: "Update project field1 (text).",
-    available: "remote",
-    parameters: [
-      { name: "value", type: "string", required: true, description: "New value for field1." },
-      { name: "itemId", type: "string", required: true, description: "Target item id." },
-    ],
-    handler: ({ value, itemId }: { value: string; itemId: string }) => {
-      const safeValue = String((value as unknown as string) ?? "");
-      updateItemData(itemId, (prev) => {
-        const anyPrev = prev as { field1?: string };
-        if (typeof anyPrev.field1 === "string") {
-          return { ...anyPrev, field1: safeValue } as ItemData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  // Project-specific field updates
-  useCopilotAction({
-    name: "setProjectField2",
-    description: "Update project field2 (select).",
-    available: "remote",
-    parameters: [
-      { name: "value", type: "string", required: true, description: "New value for field2." },
-      { name: "itemId", type: "string", required: true, description: "Target item id." },
-    ],
-    handler: ({ value, itemId }: { value: string; itemId: string }) => {
-      const safeValue = String((value as unknown as string) ?? "");
-      updateItemData(itemId, (prev) => {
-        const anyPrev = prev as { field2?: string };
-        if (typeof anyPrev.field2 === "string") {
-          return { ...anyPrev, field2: safeValue } as ItemData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  useCopilotAction({
-    name: "setProjectField3",
-    description: "Update project field3 (date, YYYY-MM-DD).",
-    available: "remote",
-    parameters: [
-      { name: "date", type: "string", required: true, description: "Date in YYYY-MM-DD format." },
-      { name: "itemId", type: "string", required: true, description: "Target item id." },
-    ],
-    handler: (args: { date?: string; itemId: string } & Record<string, unknown>) => {
-      const itemId = String(args.itemId);
-      const dictArgs = args as Record<string, unknown>;
-      const rawInput = (dictArgs["date"]) ?? (dictArgs["value"]) ?? (dictArgs["val"]) ?? (dictArgs["text"]);
-      const normalizeDate = (input: unknown): string | null => {
-        if (input == null) return null;
-        if (input instanceof Date && !isNaN(input.getTime())) {
-          const yyyy = input.getUTCFullYear();
-          const mm = String(input.getUTCMonth() + 1).padStart(2, "0");
-          const dd = String(input.getUTCDate()).padStart(2, "0");
-          return `${yyyy}-${mm}-${dd}`;
-        }
-        const asString = String(input);
-        // Already in YYYY-MM-DD
-        if (/^\d{4}-\d{2}-\d{2}$/.test(asString)) return asString;
-        const parsed = new Date(asString);
-        if (!isNaN(parsed.getTime())) {
-          const yyyy = parsed.getUTCFullYear();
-          const mm = String(parsed.getUTCMonth() + 1).padStart(2, "0");
-          const dd = String(parsed.getUTCDate()).padStart(2, "0");
-          return `${yyyy}-${mm}-${dd}`;
-        }
-        return null;
-      };
-      const normalized = normalizeDate(rawInput);
-      if (!normalized) return;
-      updateItemData(itemId, (prev) => {
-        const anyPrev = prev as { field3?: string };
-        if (typeof anyPrev.field3 === "string") {
-          return { ...anyPrev, field3: normalized } as ItemData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  // Clear project field3 (date)
-  useCopilotAction({
-    name: "clearProjectField3",
-    description: "Clear project field3 (date).",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id." },
-    ],
-    handler: ({ itemId }: { itemId: string }) => {
-      updateItemData(itemId, (prev) => {
-        const anyPrev = prev as { field3?: string };
-        if (typeof anyPrev.field3 === "string") {
-          return { ...anyPrev, field3: "" } as ItemData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  // Project field4 (checklist) CRUD
-  useCopilotAction({
-    name: "addProjectChecklistItem",
-    description: "Add a new checklist item to a project.",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (project)." },
-      { name: "text", type: "string", required: false, description: "Initial checklist text (optional)." },
-    ],
-    handler: ({ itemId, text }: { itemId: string; text?: string }) => {
-      const norm = (text ?? "").trim();
-      // 1) If a checklist item with same text exists, return its id
-      const project = (viewState.items ?? initialState.items).find((it) => it.id === itemId);
-      if (project && project.type === "project") {
-        const list = ((project.data as ProjectData).field4 ?? []);
-        const dup = norm ? list.find((c) => (c.text ?? "").trim() === norm) : undefined;
-        if (dup) return dup.id;
+    let result = "";
+    changes.forEach((part) => {
+      if (part.added) {
+        result += `<em>${part.value}</em>`;
+      } else if (part.removed) {
+        result += `<s>${part.value}</s>`;
+      } else {
+        result += part.value;
       }
-      // 2) Per-project throttle to avoid rapid duplicates
-      const now = Date.now();
-      const key = `${itemId}`;
-      const recent = lastChecklistCreationRef.current[key];
-      if (recent && recent.text === norm && now - recent.ts < 800) {
-        return recent.id;
-      }
-      let createdId = "";
-      updateItemData(itemId, (prev) => {
-        const { next, createdId: id } = projectAddField4Item(prev as ProjectData, text);
-        createdId = id;
-        return next;
-      });
-      lastChecklistCreationRef.current[key] = { text: norm, id: createdId, ts: now };
-      return createdId;
-    },
-  });
+    });
 
-  useCopilotAction({
-    name: "setProjectChecklistItem",
-    description: "Update a project's checklist item text and/or done state.",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (project)." },
-      { name: "checklistItemId", type: "string", required: true, description: "Checklist item id." },
-      { name: "text", type: "string", required: false, description: "New text (optional)." },
-      { name: "done", type: "boolean", required: false, description: "Done status (optional)." },
-    ],
-    handler: (args) => {
-      const itemId = String(args.itemId ?? "");
-      const target = args.checklistItemId ?? args.itemId;
-      let targetId = target != null ? String(target) : "";
-      const maybeDone = args.done;
-      const text: string | undefined = args.text != null ? String(args.text) : undefined;
-      const toBool = (v: unknown): boolean | undefined => {
-        if (typeof v === "boolean") return v;
-        if (typeof v === "string") {
-          const s = v.trim().toLowerCase();
-          if (s === "true") return true;
-          if (s === "false") return false;
-        }
-        return undefined;
-      };
-      const done = toBool(maybeDone);
-      updateItemData(itemId, (prev) => {
-        let next = prev as ProjectData;
-        const list = (next.field4 ?? []);
-        // If a plain numeric was provided, allow using it as index (0- or 1-based)
-        if (!list.some((c) => c.id === targetId) && /^\d+$/.test(targetId)) {
-          const n = parseInt(targetId, 10);
-          let idx = -1;
-          if (n >= 0 && n < list.length) idx = n; // 0-based
-          else if (n > 0 && n - 1 < list.length) idx = n - 1; // 1-based
-          if (idx >= 0) targetId = list[idx].id;
-        }
-        if (typeof text === "string") next = projectSetField4ItemText(next, targetId, text);
-        if (typeof done === "boolean") next = projectSetField4ItemDone(next, targetId, done);
-        return next;
-      });
-    },
-  });
+    if (oldText.length > newText.length && !isComplete) {
+      result += oldText.slice(newText.length);
+    }
 
-  useCopilotAction({
-    name: "removeProjectChecklistItem",
-    description: "Remove a checklist item from a project by id.",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (project)." },
-      { name: "checklistItemId", type: "string", required: true, description: "Checklist item id to remove." },
-    ],
-    handler: ({ itemId, checklistItemId }: { itemId: string; checklistItemId: string }) => {
-      updateItemData(itemId, (prev) => projectRemoveField4Item(prev as ProjectData, checklistItemId));
-    },
-  });
+    return result;
+  }
 
-  // Entity field updates and field3 (tags)
-  useCopilotAction({
-    name: "setEntityField1",
-    description: "Update entity field1 (text).",
-    available: "remote",
-    parameters: [
-      { name: "value", type: "string", required: true, description: "New value for field1." },
-      { name: "itemId", type: "string", required: true, description: "Target item id (entity)." },
-    ],
-    handler: ({ value, itemId }: { value: string; itemId: string }) => {
-      updateItemData(itemId, (prev) => {
-        const anyPrev = prev;
-        if (typeof anyPrev.field1 === "string") {
-          return { ...anyPrev, field1: value } as ItemData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  useCopilotAction({
-    name: "setEntityField2",
-    description: "Update entity field2 (select).",
-    available: "remote",
-    parameters: [
-      { name: "value", type: "string", required: true, description: "New value for field2." },
-      { name: "itemId", type: "string", required: true, description: "Target item id (entity)." },
-    ],
-    handler: ({ value, itemId }: { value: string; itemId: string }) => {
-      updateItemData(itemId, (prev) => {
-        const anyPrev = prev as { field2?: string };
-        if (typeof anyPrev.field2 === "string") {
-          return { ...anyPrev, field2: value } as ItemData;
-        }
-        return prev;
-      });
-    },
-  });
-
-  useCopilotAction({
-    name: "addEntityField3",
-    description: "Add a tag to entity field3 (tags) if not present.",
-    available: "remote",
-    parameters: [
-      { name: "tag", type: "string", required: true, description: "Tag to add." },
-      { name: "itemId", type: "string", required: true, description: "Target item id (entity)." },
-    ],
-    handler: ({ tag, itemId }: { tag: string; itemId: string }) => {
-      updateItemData(itemId, (prev) => {
-        const e = prev as EntityData;
-        const current = new Set<string>((e.field3 ?? []) as string[]);
-        current.add(tag);
-        return { ...e, field3: Array.from(current) } as EntityData;
-      });
-    },
-  });
-
-  useCopilotAction({
-    name: "removeEntityField3",
-    description: "Remove a tag from entity field3 (tags) if present.",
-    available: "remote",
-    parameters: [
-      { name: "tag", type: "string", required: true, description: "Tag to remove." },
-      { name: "itemId", type: "string", required: true, description: "Target item id (entity)." },
-    ],
-    handler: ({ tag, itemId }: { tag: string; itemId: string }) => {
-      updateItemData(itemId, (prev) => {
-        const e = prev as EntityData;
-        return { ...e, field3: ((e.field3 ?? []) as string[]).filter((t) => t !== tag) } as EntityData;
-      });
-    },
-  });
-
-  // Chart field1 (metrics) CRUD
-  useCopilotAction({
-    name: "addChartField1",
-    description: "Add a new metric (field1 entries).",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (chart)." },
-      { name: "label", type: "string", required: false, description: "Metric label (optional)." },
-      { name: "value", type: "number", required: false, description: "Metric value 0..100 (optional)." },
-    ],
-    handler: ({ itemId, label, value }: { itemId: string; label?: string; value?: number }) => {
-      const normLabel = (label ?? "").trim();
-      // 1) If a metric with same label exists, return its id
-      const item = (viewState.items ?? initialState.items).find((it) => it.id === itemId);
-      if (item && item.type === "chart") {
-        const list = ((item.data as ChartData).field1 ?? []);
-        const dup = normLabel ? list.find((m) => (m.label ?? "").trim() === normLabel) : undefined;
-        if (dup) return dup.id;
-      }
-      // 2) Per-chart throttle to avoid rapid duplicates
-      const now = Date.now();
-      const key = `${itemId}`;
-      const recent = lastMetricCreationRef.current[key];
-      const valKey: number | "" = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : "";
-      if (recent && recent.label === normLabel && recent.value === valKey && now - recent.ts < 800) {
-        return recent.id;
-      }
-      let createdId = "";
-      updateItemData(itemId, (prev) => {
-        const { next, createdId: id } = chartAddField1Metric(prev as ChartData, label, value);
-        createdId = id;
-        return next;
-      });
-      lastMetricCreationRef.current[key] = { label: normLabel, value: valKey, id: createdId, ts: now };
-      return createdId;
-    },
-  });
-
-  useCopilotAction({
-    name: "setChartField1Label",
-    description: "Update chart field1 entry label by index.",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (chart)." },
-      { name: "index", type: "number", required: true, description: "Metric index (0-based)." },
-      { name: "label", type: "string", required: true, description: "New metric label." },
-    ],
-    handler: ({ itemId, index, label }: { itemId: string; index: number; label: string }) => {
-      updateItemData(itemId, (prev) => chartSetField1Label(prev as ChartData, index, label));
-    },
-  });
-
-  useCopilotAction({
-    name: "setChartField1Value",
-    description: "Update chart field1 entry value by index (0..100).",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (chart)." },
-      { name: "index", type: "number", required: true, description: "Metric index (0-based)." },
-      { name: "value", type: "number", required: true, description: "Metric value 0..100." },
-    ],
-    handler: ({ itemId, index, value }: { itemId: string; index: number; value: number }) => {
-      updateItemData(itemId, (prev) => chartSetField1Value(prev as ChartData, index, value));
-    },
-  });
-
-  // Clear chart metric value by index
-  useCopilotAction({
-    name: "clearChartField1Value",
-    description: "Clear chart field1 entry value by index (sets to empty).",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (chart)." },
-      { name: "index", type: "number", required: true, description: "Metric index (0-based)." },
-    ],
-    handler: ({ itemId, index }: { itemId: string; index: number }) => {
-      updateItemData(itemId, (prev) => chartSetField1Value(prev as ChartData, index, ""));
-    },
-  });
-
-  useCopilotAction({
-    name: "removeChartField1",
-    description: "Remove a chart field1 entry by index.",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id (chart)." },
-      { name: "index", type: "number", required: true, description: "Metric index (0-based)." },
-    ],
-    handler: ({ itemId, index }: { itemId: string; index: number }) => {
-      updateItemData(itemId, (prev) => chartRemoveField1Metric(prev as ChartData, index));
-    },
-  });
-
-  useCopilotAction({
-    name: "createItem",
-    description: "Create a new item.",
-    available: "remote",
-    parameters: [
-      { name: "type", type: "string", required: true, description: "One of: project, entity, note, chart." },
-      { name: "name", type: "string", required: false, description: "Optional item name." },
-    ],
-    handler: ({ type, name }: { type: string; name?: string }) => {
-      const t = (type as CardType);
-      const normalized = (name ?? "").trim();
-
-      // 1) Name-based idempotency: if an item with same type+name exists, return it
-      if (normalized) {
-        const existing = (viewState.items ?? initialState.items).find((it) => it.type === t && (it.name ?? "").trim() === normalized);
-        if (existing) {
-          return existing.id;
-        }
-      }
-      // 2) Per-run throttle: avoid duplicate creations within a short window for identical type+name
-      const now = Date.now();
-      const recent = lastCreationRef.current;
-      if (recent && recent.type === t && (recent.name ?? "") === normalized && now - recent.ts < 5000) {
-        return recent.id;
-      }
-      const id = addItem(t, name);
-      lastCreationRef.current = { type: t, name: normalized, id, ts: now };
-      return id;
-    },
-  });
-
-  // Frontend action: delete an item by id
-  useCopilotAction({
-    name: "deleteItem",
-    description: "Delete an item by id.",
-    available: "remote",
-    parameters: [
-      { name: "itemId", type: "string", required: true, description: "Target item id." },
-    ],
-    handler: ({ itemId }: { itemId: string }) => {
-      const existed = (viewState.items ?? initialState.items).some((p) => p.id === itemId);
-      deleteItem(itemId);
-      return existed ? `deleted:${itemId}` : `not_found:${itemId}`;
-    },
-  });
 
   const titleClasses = cn(
     /* base styles */
@@ -873,40 +470,56 @@ export default function CopilotKitPage() {
     >
       {/* Main Layout */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Chat Sidebar */}
-        <aside className="-order-1 max-md:hidden flex flex-col min-w-80 w-[30vw] max-w-120 p-4 pr-0">
-          <div className="h-full flex flex-col align-start w-full shadow-lg rounded-2xl border border-sidebar-border overflow-hidden">
-            {/* Chat Header */}
-            <AppChatHeader />
-            {/* Chat Content - conditionally rendered to avoid duplicate rendering */}
-            {isDesktop && (
-              <CopilotChat
-                className="flex-1 overflow-auto w-full"
-                labels={{
-                  title: "Agent",
-                  initial:
-                    "👋 Share a brief or ask to extract fields. Changes will sync with the canvas in real time.",
-                }}
-                suggestions={[
-                  {
-                    title: "Add a Project",
-                    message: "Create a new project.",
-                  },
-                  {
-                    title: "Add an Entity",
-                    message: "Create a new entity.",
-                  },
-                  {
-                    title: "Add a Note",
-                    message: "Create a new note.",
-                  },
-                  {
-                    title: "Add a Chart",
-                    message: "Create a new chart.",
-                  },
-                ]}
-              />
-            )}
+        {/* Conversations Sidebar (Left) */}
+        <aside className="max-md:hidden flex flex-col min-w-64 w-[24vw] max-w-120 p-4 pr-0">
+          <div className="h-full flex flex-col align-start w-full shadow-lg rounded-2xl border border-sidebar-border overflow-hidden bg-card">
+            <div className="p-4 border-b border-sidebar-border flex items-center justify-between gap-2">
+              <h3 className="font-bold text-sidebar-foreground">Conversations</h3>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => createConversation()}>
+                  <Plus className="size-4" />
+                  <span className="sr-only">New chat</span>
+                </Button>
+                <Button size="sm" variant="destructive" onClick={clearAllConversations}>Clear all</Button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto p-2">
+              <ul className="flex flex-col gap-1">
+                {conversations.map((c) => {
+                  const selected = c.id === selectedConversationId;
+                  return (
+                    <li key={c.id} className={cn("group rounded-lg border transition-colors", selected ? "border-accent bg-accent/10" : "border-border hover:border-accent/40 hover:bg-accent/5")}>
+                      <div className="flex items-center">
+                        <button
+                          type="button"
+                          className={cn("flex-1 text-left px-3 py-2 truncate", selected ? "text-accent" : "")}
+                          onClick={() => setSelectedConversationId(c.id)}
+                          title={c.title}
+                        >
+                          {c.title}
+                        </button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="Conversation menu"
+                              className="px-2 py-2 text-muted-foreground hover:text-foreground"
+                            >
+                              <MoreHorizontal className="size-4" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => renameConversation(c.id)}>Rename</DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem data-variant="destructive" onClick={() => deleteConversation(c.id)}>Delete</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           </div>
         </aside>
         {/* Main Content */}
@@ -941,17 +554,11 @@ export default function CopilotKitPage() {
                   />
                 </motion.div>
               )}
-              
+
               {(viewState.items ?? []).length === 0 ? (
-                <EmptyState className="flex-1">
-                  <div className="mx-auto max-w-lg text-center">
-                    <h2 className="text-lg font-semibold text-foreground">Nothing here yet</h2>
-                    <p className="mt-2 text-sm text-muted-foreground">Create your first item to get started.</p>
-                    <div className="mt-6 flex justify-center">
-                      <NewItemMenu onSelect={(t: CardType) => addItem(t)} align="center" className="md:h-10" />
-                    </div>
-                  </div>
-                </EmptyState>
+                <div className="flex-1 pb-4">
+                  <MarkdownEditor className="mx-auto max-w-5xl h-[calc(100vh-220px)]" />
+                </div>
               ) : (
                 <div className="flex-1 py-0 overflow-hidden">
                   {showJsonView ? (
@@ -1025,8 +632,116 @@ export default function CopilotKitPage() {
             </div>
           ) : null}
         </main>
+        {/* Chat Sidebar (Right) */}
+        <aside className="max-md:hidden flex flex-col min-w-80 w-[30vw] max-w-120 p-4 pl-0">
+          <div className="h-full flex flex-col align-start w-full shadow-lg rounded-2xl border border-sidebar-border overflow-hidden">
+            <AppChatHeader />
+            {isDesktop && (
+              <CopilotChat
+                key={selectedConversationId}
+                className="flex-1 overflow-auto w-full"
+                labels={{
+                  title: "Agent",
+                  initial:
+                    "👋 Hi!! I am Frankie, a story generator agent. I can help you to generate stories based on your needs. \n\nAdded to that, I can pull posts from subreddits and generate stories based on them.",
+                }}
+                suggestions={[
+                  { title: "Add a Project", message: "Create a new project." },
+                  { title: "Add an Entity", message: "Create a new entity." },
+                  { title: "Add a Note", message: "Create a new note." },
+                  { title: "Add a Chart", message: "Create a new chart." },
+                ]}
+              />
+            )}
+          </div>
+        </aside>
       </div>
+      {/* Mobile: Conversations Drawer and Hamburger */}
       <div className="md:hidden">
+        <button
+          type="button"
+          aria-label="Open conversations"
+          className="fixed z-40 left-3 top-3 inline-flex h-10 w-10 items-center justify-center rounded-lg border bg-card text-foreground shadow-sm"
+          onClick={() => setMobileDrawerOpen(true)}
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+
+        {/* Drawer Overlay */}
+        <div
+          className={cn(
+            "fixed inset-0 z-50 transition-opacity",
+            mobileDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0"
+          )}
+          onClick={() => setMobileDrawerOpen(false)}
+        >
+          <div className="absolute inset-0 bg-black/40" />
+        </div>
+
+        {/* Drawer Panel */}
+        <div
+          className={cn(
+            "fixed z-50 left-0 top-0 bottom-0 w-[85vw] max-w-96 bg-card border-r shadow-xl transition-transform",
+            mobileDrawerOpen ? "translate-x-0" : "-translate-x-full"
+          )}
+        >
+          <div className="p-4 border-b border-sidebar-border flex items-center justify-between gap-2">
+            <h3 className="font-bold">Conversations</h3>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => { createConversation(); setMobileDrawerOpen(false); }}>
+                <Plus className="size-4" />
+                <span className="sr-only">New chat</span>
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => { clearAllConversations(); setMobileDrawerOpen(false); }}>Clear all</Button>
+              <button
+                type="button"
+                aria-label="Close"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground hover:text-foreground hover:bg-accent/10"
+                onClick={() => setMobileDrawerOpen(false)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+          <div className="h-[calc(100%-56px)] overflow-auto p-2">
+            <ul className="flex flex-col gap-1">
+              {conversations.map((c) => {
+                const selected = c.id === selectedConversationId;
+                return (
+                  <li key={c.id} className={cn("group rounded-lg border transition-colors", selected ? "border-accent bg-accent/10" : "border-border hover:border-accent/40 hover:bg-accent/5")}>
+                    <div className="flex items-center">
+                      <button
+                        type="button"
+                        className={cn("flex-1 text-left px-3 py-2 truncate", selected ? "text-accent" : "")}
+                        onClick={() => { setSelectedConversationId(c.id); setMobileDrawerOpen(false); }}
+                        title={c.title}
+                      >
+                        {c.title}
+                      </button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label="Conversation menu"
+                            className="px-2 py-2 text-muted-foreground hover:text-foreground"
+                          >
+                            <MoreHorizontal className="size-4" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => { renameConversation(c.id); }}>Rename</DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem data-variant="destructive" onClick={() => { deleteConversation(c.id); }}>Delete</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
+
         {/* Mobile Chat Popup - conditionally rendered to avoid duplicate rendering */}
         {!isDesktop && (
           <CopilotPopup

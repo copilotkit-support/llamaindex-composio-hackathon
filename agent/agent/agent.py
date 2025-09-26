@@ -6,7 +6,7 @@ from llama_index.core.workflow import Context
 from llama_index.llms.openai import OpenAI
 from llama_index.protocols.ag_ui.events import StateSnapshotWorkflowEvent
 from llama_index.protocols.ag_ui.router import get_ag_ui_workflow_router
-
+from agent.prompts import SYSTEM_PROMPT
 # Load environment variables early to support local development via .env
 load_dotenv()
 
@@ -15,16 +15,20 @@ def _load_composio_tools() -> List[Any]:
     """Dynamically load Composio tools for LlamaIndex if configured.
 
     Reads the following environment variables:
-    - COMPOSIO_TOOL_IDS: comma-separated list of tool identifiers to enable
-    - COMPOSIO_USER_ID: user/entity id to scope tools (defaults to "default")
     - COMPOSIO_API_KEY: required by Composio client; read implicitly by SDK
+    - COMPOSIO_USER_ID: user/entity id to scope tools (defaults to "default")
+    - COMPOSIO_TOOL_IDS: comma-separated list of tool slugs to enable (takes precedence)
+    - COMPOSIO_TOOLKITS: comma-separated toolkit slugs to auto-discover from (default: "reddit")
+    - COMPOSIO_TOOL_SEARCH: optional keyword to filter tools during discovery
+    - COMPOSIO_TOOL_SCOPES: optional comma-separated scopes to filter toolkit tools
+    - COMPOSIO_TOOL_LIMIT: optional integer limit for auto-discovery (default: 100)
+
+    Behavior:
+    - If COMPOSIO_TOOL_IDS is provided, use those exact tool slugs.
+    - Otherwise, auto-discover tools from the specified toolkits (defaults to Reddit).
 
     Returns an empty list if not configured or if dependencies are missing.
     """
-    tool_ids_str = os.getenv("COMPOSIO_TOOL_IDS", "").strip()
-    if not tool_ids_str:
-        return []
-
     # Import lazily to avoid hard runtime dependency if not used
     try:
         from composio import Composio  # type: ignore
@@ -33,16 +37,45 @@ def _load_composio_tools() -> List[Any]:
         return []
 
     user_id = os.getenv("COMPOSIO_USER_ID", "default")
-    tool_ids = [t.strip() for t in tool_ids_str.split(",") if t.strip()]
-    if not tool_ids:
+
+    # 1) Explicit tool IDs (highest priority)
+    tool_ids_str = os.getenv("COMPOSIO_TOOL_IDS", "").strip()
+    if tool_ids_str:
+        tool_ids = [t.strip() for t in tool_ids_str.split(",") if t.strip()]
+        if not tool_ids:
+            return []
+        try:
+            composio = Composio(provider=LlamaIndexProvider())
+            tools = composio.tools.get(user_id=user_id, tools=tool_ids)
+            return list(tools) if tools is not None else []
+        except Exception:
+            return []
+
+    # 2) Auto-discover from toolkits (defaults to reddit)
+    toolkits_str = os.getenv("COMPOSIO_TOOLKITS", "reddit").strip()
+    toolkits = [t.strip() for t in toolkits_str.split(",") if t.strip()]
+    search = os.getenv("COMPOSIO_TOOL_SEARCH", "").strip() or None
+    scopes_str = os.getenv("COMPOSIO_TOOL_SCOPES", "").strip()
+    scopes = [s.strip() for s in scopes_str.split(",") if s.strip()] or None
+    try:
+        limit = int(os.getenv("COMPOSIO_TOOL_LIMIT", "100").strip())
+    except Exception:
+        limit = 100
+
+    if not toolkits:
         return []
+
     try:
         composio = Composio(provider=LlamaIndexProvider())
-        tools = composio.tools.get(user_id=user_id, tools=tool_ids)
-        # "tools" should be a list of LlamaIndex-compatible Tool objects
+        tools = composio.tools.get(
+            user_id=user_id,
+            toolkits=toolkits,
+            search=search,
+            scopes=scopes,
+            limit=limit,
+        )
         return list(tools) if tools is not None else []
     except Exception:
-        # Fail closed; backend tools remain empty if configuration is invalid
         return []
 
 
@@ -50,6 +83,12 @@ def _load_composio_tools() -> List[Any]:
 
 
 # --- Frontend tool stubs (names/signatures only; execution happens in the UI) ---
+
+def selectAngle(
+    angles: Annotated[List[str], "A list of angles from which user can select"],
+) -> str:
+    """Select an angle for the story."""
+    return f"selectAngle({angles})"
 
 def createItem(
     type: Annotated[str, "One of: project, entity, note, chart."],
@@ -171,40 +210,7 @@ def clearChartField1Value(itemId: Annotated[str, "Chart id."], index: Annotated[
 def removeChartField1(itemId: Annotated[str, "Chart id."], index: Annotated[int, "Metric index (0-based)."]) -> str:
     return f"removeChartField1({itemId}, {index})"
 
-FIELD_SCHEMA = (
-    "FIELD SCHEMA (authoritative):\n"
-    "- project.data:\n"
-    "  - field1: string (text)\n"
-    "  - field2: string (select: 'Option A' | 'Option B' | 'Option C')\n"
-    "  - field3: string (date 'YYYY-MM-DD')\n"
-    "  - field4: ChecklistItem[] where ChecklistItem={id: string, text: string, done: boolean, proposed: boolean}\n"
-    "- entity.data:\n"
-    "  - field1: string\n"
-    "  - field2: string (select: 'Option A' | 'Option B' | 'Option C')\n"
-    "  - field3: string[] (selected tags; subset of field3_options)\n"
-    "  - field3_options: string[] (available tags)\n"
-    "- note.data:\n"
-    "  - field1: string (textarea; represents description)\n"
-    "- chart.data:\n"
-    "  - field1: Array<{id: string, label: string, value: number | ''}> with value in [0..100] or ''\n"
-)
 
-SYSTEM_PROMPT = (
-    "You are a helpful AG-UI assistant.\n\n"
-    + FIELD_SCHEMA +
-    "\nMUTATION/TOOL POLICY:\n"
-    "- When you claim to create/update/delete, you MUST call the corresponding tool(s) (frontend or backend).\n"
-    "- To create new cards, call the frontend tool `createItem` with `type` in {project, entity, note, chart} and optional `name`.\n"
-    "- After tools run, rely on the latest shared state (ground truth) when replying.\n"
-    "- To set a card's subtitle (never the data fields): use setItemSubtitleOrDescription.\n\n"
-    "DESCRIPTION MAPPING:\n"
-    "- For project/entity/chart: treat 'description', 'overview', 'summary', 'caption', 'blurb' as the card subtitle; use setItemSubtitleOrDescription.\n"
-    "- For notes: 'content', 'description', 'text', or 'note' refers to note content; use setNoteField1 / appendNoteField1 / clearNoteField1.\n\n"
-    "STRICT GROUNDING RULES:\n"
-    "1) ONLY use shared state (items/globalTitle/globalDescription) as the source of truth.\n"
-    "2) Before ANY read or write, assume values may have changed; always read the latest state.\n"
-    "3) If a command doesn't specify which item to change, ask to clarify.\n"
-)
 
 _backend_tools = _load_composio_tools()
 
@@ -212,31 +218,7 @@ agentic_chat_router = get_ag_ui_workflow_router(
     llm=OpenAI(model="gpt-4.1"),
     # Provide frontend tool stubs so the model knows their names/signatures.
     frontend_tools=[
-        createItem,
-        deleteItem,
-        setItemName,
-        setItemSubtitleOrDescription,
-        setGlobalTitle,
-        setGlobalDescription,
-        setNoteField1,
-        appendNoteField1,
-        clearNoteField1,
-        setProjectField1,
-        setProjectField2,
-        setProjectField3,
-        clearProjectField3,
-        addProjectChecklistItem,
-        setProjectChecklistItem,
-        removeProjectChecklistItem,
-        setEntityField1,
-        setEntityField2,
-        addEntityField3,
-        removeEntityField3,
-        addChartField1,
-        setChartField1Label,
-        setChartField1Value,
-        clearChartField1Value,
-        removeChartField1,
+        selectAngle,
     ],
     backend_tools=_backend_tools,
     system_prompt=SYSTEM_PROMPT,
