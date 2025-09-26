@@ -1,34 +1,17 @@
 "use client";
 
-import { useCoAgent, useCopilotAction, useCopilotAdditionalInstructions, useCopilotMessagesContext } from "@copilotkit/react-core";
+import { useCoAgent, useCopilotAction } from "@copilotkit/react-core";
 import { CopilotKitCSSProperties, CopilotChat, CopilotPopup, useCopilotChatSuggestions } from "@copilotkit/react-ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type React from "react";
-import MarkdownIt, { } from "markdown-it";
-import { Button } from "@/components/ui/button"
 import AppChatHeader, { PopupHeader } from "@/components/canvas/AppChatHeader";
-import { X, MoreHorizontal, Plus, Menu } from "lucide-react"
-import CardRenderer from "@/components/canvas/CardRenderer";
-import ShikiHighlighter from "react-shiki/web";
-import { motion, useScroll, useTransform, useMotionValueEvent } from "motion/react";
-import { EmptyState } from "@/components/empty-state";
-import { cn, getContentArg } from "@/lib/utils";
+import { Menu } from "lucide-react"
+import { cn } from "@/lib/utils";
 import { diffWords } from "diff";
-import type { AgentState, Item, ItemData, ProjectData, EntityData, NoteData, ChartData, CardType } from "@/lib/canvas/types";
-import { initialState, isNonEmptyAgentState, defaultDataFor } from "@/lib/canvas/state";
-import { projectAddField4Item, projectSetField4ItemText, projectSetField4ItemDone, projectRemoveField4Item, chartAddField1Metric, chartSetField1Label, chartSetField1Value, chartRemoveField1Metric } from "@/lib/canvas/updates";
+import type { AgentState } from "@/lib/canvas/types";
+import { initialState } from "@/lib/canvas/state";
 import useMediaQuery from "@/hooks/use-media-query";
-import ItemHeader from "@/components/canvas/ItemHeader";
-import NewItemMenu from "@/components/canvas/NewItemMenu";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
 import MarkdownEditor from "@/components/MarkdownEditor";
-import { TextMessage, ActionExecutionMessage, ResultMessage, AgentStateMessage, Role, Message } from "@copilotkit/runtime-client-gql"
 import { AngleSelector } from "@/components/canvas/AngleSelector";
 import { ConfirmChanges } from "@/components/canvas/ConfirmChanges";
 import LeftSidebar from "@/components/canvas/LeftSidebar";
@@ -41,21 +24,11 @@ export default function CopilotKitPage() {
 
   // Global cache for the last non-empty agent state
   const cachedStateRef = useRef<AgentState>(state ?? initialState);
-  // useEffect(() => {
-  //   if (isNonEmptyAgentState(state)) {
-  //     cachedStateRef.current = state as AgentState;
-  //   }
-  // }, [state]);
-  // we use viewState to avoid transient flicker; TODO: troubleshoot and remove this workaround
-  // const viewState: AgentState = isNonEmptyAgentState(state) ? (state as AgentState) : cachedStateRef.current;
 
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
   const [bufferDocument, setBufferDocument] = useState("");
-  type Conversation = { id: string; title: string; createdAt: number; messages: any; state: any };
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState<string>("");
 
 
 
@@ -95,16 +68,17 @@ export default function CopilotKitPage() {
       setCurrentDocument={setState}
       respond={respond}
       status={status}
-      currentDocument={bufferDocument || state.story}
+      currentDocument={state.story}
       onReject={function (): void {
         console.log(bufferDocument, "bufferDocumentbufferDocumentbufferDocumentbufferDocument");
-
+        debugger
         setState({ ...state, story: bufferDocument });
       }}
       onConfirm={function (): void {
+        debugger
         setState({ story: args?.story ?? "", title: args?.title ?? "", description: args?.description ?? "" })
         // setCurrentDocument(bufferDocument);
-        setBufferDocument(args?.story ?? "");
+        // setBufferDocument(args?.story ?? "");
         // throw new Error("Function not implemented.");
       }}
 
@@ -185,7 +159,6 @@ export default function CopilotKitPage() {
             <AppChatHeader />
             {isDesktop && (
               <CopilotChat
-                key={selectedConversationId}
                 className="flex-1 overflow-auto w-full"
                 labels={{
                   title: "Agent",
