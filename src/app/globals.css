@@ -166,6 +166,22 @@ html {
   background: rgba(99, 102, 241, 0.55);
 }
 
+/* TipTap rich typography */
+.tiptap {
+  line-height: 1.7;
+}
+.tiptap h1 { @apply text-3xl font-extrabold tracking-tight mb-4; }
+.tiptap h2 { @apply text-2xl font-bold mb-3 mt-6; }
+.tiptap h3 { @apply text-xl font-semibold mb-2.5 mt-5; }
+.tiptap p { @apply mb-4 text-[0.98rem]; }
+.tiptap ul { @apply list-disc pl-6 mb-4; }
+.tiptap ol { @apply list-decimal pl-6 mb-4; }
+.tiptap blockquote { @apply border-l-4 border-accent/40 bg-accent/5 px-4 py-2 rounded-r-md italic my-4; }
+.tiptap pre { @apply bg-gray-900 text-gray-100 p-3 rounded-lg overflow-x-auto mb-4; }
+.tiptap code:not(pre code) { @apply bg-accent/10 text-accent px-1.5 py-0.5 rounded; }
+.tiptap hr { @apply my-6 border-border; }
+.tiptap a { @apply text-accent underline underline-offset-2; }
+
 .copilotKitMessages {
   @apply pr-0!;
   div:empty {

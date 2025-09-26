@@ -90,6 +90,15 @@ def selectAngle(
     """Select an angle for the story."""
     return f"selectAngle({angles})"
 
+def generateStoryAndConfirm(
+    story: Annotated[str, "The story that is generated. Strictly markdown format."],
+    title: Annotated[str, "The title of the story"],
+    description: Annotated[str, "The description of the story"],
+) -> str:
+    """Generate a story and confirm it."""
+    return f"generateStoryAndConfirm({story}, {title}, {description})"
+
+
 def createItem(
     type: Annotated[str, "One of: project, entity, note, chart."],
     name: Annotated[Optional[str], "Optional item name."] = None,
@@ -219,15 +228,14 @@ agentic_chat_router = get_ag_ui_workflow_router(
     # Provide frontend tool stubs so the model knows their names/signatures.
     frontend_tools=[
         selectAngle,
+        generateStoryAndConfirm,
     ],
     backend_tools=_backend_tools,
     system_prompt=SYSTEM_PROMPT,
     initial_state={
         # Shared state synchronized with the frontend canvas
-        "items": [],
-        "globalTitle": "",
-        "globalDescription": "",
-        "lastAction": "",
-        "itemsCreated": 0,
+        "story": "",
+        "title": "",
+        "description": "",
     },
 )

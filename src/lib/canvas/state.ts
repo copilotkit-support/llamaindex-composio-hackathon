@@ -1,11 +1,9 @@
 import { AgentState, CardType, ChartData, EntityData, ItemData, NoteData, ProjectData } from "@/lib/canvas/types";
 
 export const initialState: AgentState = {
-  items: [],
-  globalTitle: "",
-  globalDescription: "",
-  lastAction: "",
-  itemsCreated: 0,
+  story: "",
+  title: "",
+  description: "",
 };
 
 export function isNonEmptyAgentState(value: unknown): value is AgentState {

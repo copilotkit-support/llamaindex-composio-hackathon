@@ -28,7 +28,6 @@ export function AngleSelector({ args, respond }: AngleSelectorProps) {
   const [finalized, setFinalized] = useState<"confirmed" | "cancelled" | null>(null);
 
   const handleConfirm = () => {
-    debugger
     if (!selected || finalized) return;
     setFinalized("confirmed");
     respond?.(selected);
@@ -36,7 +35,6 @@ export function AngleSelector({ args, respond }: AngleSelectorProps) {
   };
 
   const handleCancel = () => {
-    debugger
     if (finalized) return;
     setFinalized("cancelled");
     respond?.("cancelled");

@@ -53,11 +53,9 @@ export interface Item {
 }
 
 export interface AgentState {
-  items: Item[];
-  globalTitle: string;
-  globalDescription: string;
-  lastAction?: string;
-  itemsCreated: number;
+  story: string;
+  title: string;
+  description: string;
 }
 
 

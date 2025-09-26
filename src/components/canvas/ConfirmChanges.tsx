@@ -2,6 +2,8 @@
 import { useEffect, useState } from "react";
 import MarkdownIt from "markdown-it";
 import { diffWords } from "diff";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 
 interface ConfirmChangesProps {
@@ -10,12 +12,11 @@ interface ConfirmChangesProps {
     status: any;
     onReject: () => void;
     onConfirm: () => void;
-    editor: any;
     currentDocument: string;
-    setCurrentDocument: (document: string) => void;
+    setCurrentDocument: (state: any) => void;
 }
 
-export function ConfirmChanges({ args, respond, status, onReject, onConfirm, editor, currentDocument, setCurrentDocument }: ConfirmChangesProps) {
+export function ConfirmChanges({ args, respond, status, onReject, onConfirm, currentDocument, setCurrentDocument }: ConfirmChangesProps) {
     function fromMarkdown(text: string) {
         const md = new MarkdownIt({
             typographer: true,
@@ -56,65 +57,66 @@ export function ConfirmChanges({ args, respond, status, onReject, onConfirm, edi
     }
 
     useEffect(() => {
-        console.log(args?.document, "statusstatusstatusstatus");
-        if (currentDocument == "") {
-            editor?.commands.setContent(fromMarkdown(args?.document || ""));
+        if (!currentDocument) {
+            setCurrentDocument((prev: any) => ({ ...prev, story: args?.story || "" }));
+            return;
         }
-        else {
-            let diff = diffPartialText(currentDocument, args?.document || "");
-            editor?.commands.setContent(fromMarkdown(diff));
-        }
-    }, [args?.document])
+        const diff = diffPartialText(currentDocument, args?.story || "");
+        setCurrentDocument((prev: any) => ({ ...prev, story: diff }));
+    }, [args?.story])
 
     const [accepted, setAccepted] = useState<boolean | null>(null);
     if (status != 'inProgress') {
         return (
-            <div className="bg-white p-6 rounded shadow-lg border border-gray-200 mt-5 mb-5">
-                <h2 className="text-lg font-bold mb-4">Confirm Changes</h2>
-                <p className="mb-6">Do you want to accept the changes?</p>
-                {accepted === null && (
-                    <div className="flex justify-end space-x-4">
-                        <button
-                            className={`bg-gray-200 text-black py-2 px-4 rounded disabled:opacity-50 ${status === "executing" ? "cursor-pointer" : "cursor-default"
-                                }`}
-                            disabled={status !== "executing"}
-                            onClick={() => {
-                                debugger
-                                if (respond) {
-                                    setCurrentDocument(currentDocument);
-                                    setAccepted(false);
-                                    onReject();
-                                    respond("Changes rejected");
-                                }
-                            }}
+            <div className="w-full max-w-xl rounded-2xl border bg-card shadow-sm mt-5 mb-5">
+                <div className="p-4 border-b bg-accent/5 rounded-t-2xl">
+                    <h2 className="text-base font-semibold">Confirm Changes</h2>
+                </div>
+                <div className="p-4">
+                    <p className="text-sm text-muted-foreground">Do you want to accept the changes?</p>
+                </div>
+                <div className="p-4 pt-0 flex justify-end gap-2">
+                    {accepted === null ? (
+                        <>
+                            <Button
+                                variant="outline"
+                                disabled={status !== "executing"}
+                                onClick={() => {
+                                    if (respond) {
+                                        setAccepted(false);
+                                        onReject();
+                                        respond("Changes rejected");
+                                    }
+                                }}
+                            >
+                                Reject
+                            </Button>
+                            <Button
+                                disabled={status !== "executing"}
+                                onClick={() => {
+                                    if (respond) {
+                                        setAccepted(true);
+                                        onConfirm();
+                                        respond("Changes accepted");
+                                    }
+                                }}
+                            >
+                                Confirm
+                            </Button>
+                        </>
+                    ) : (
+                        <span
+                            className={cn(
+                                "inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium",
+                                accepted
+                                    ? "bg-accent/10 text-accent border-accent/40"
+                                    : "bg-muted text-muted-foreground border-border"
+                            )}
                         >
-                            Reject
-                        </button>
-                        <button
-                            className={`bg-black text-white py-2 px-4 rounded disabled:opacity-50 ${status === "executing" ? "cursor-pointer" : "cursor-default"
-                                }`}
-                            disabled={status !== "executing"}
-                            onClick={() => {
-                                debugger
-                                if (respond) {
-                                    setCurrentDocument(args?.document || "");
-                                    setAccepted(true);
-                                    onConfirm();
-                                    respond("Changes accepted");
-                                }
-                            }}
-                        >
-                            Confirm
-                        </button>
-                    </div>
-                )}
-                {accepted !== null && (
-                    <div className="flex justify-end">
-                        <div className="mt-4 bg-gray-200 text-black py-2 px-4 rounded inline-block">
-                            {accepted ? "✓ Accepted" : "✗ Rejected"}
-                        </div>
-                    </div>
-                )}
+                            {accepted ? "Accepted" : "Rejected"}
+                        </span>
+                    )}
+                </div>
             </div>
         );
     }
